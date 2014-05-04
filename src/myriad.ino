@@ -1,8 +1,16 @@
-#include <IRLib.h>
+#include <IRremote.h>
+
+//#include <IRLib.h>
 #include <SPI.h>
 #include <boards.h>
 #include <RBL_nRF8001.h>
 #include <services.h> 
+
+#include <avr/interrupt.h>
+#include <stdio.h>
+#include <avr/pgmspace.h>
+#include <stdint.h>
+#include <avr/io.h>
 
 // The pin your IR receiver should be on
 #define RECV_PIN        5
@@ -20,9 +28,47 @@
 #define OP_CODE_ACK           "ACK"
 #define OP_CODE_FIN           "FIN"
 
+// Use FNV hash algorithm: http://isthe.com/chongo/tech/comp/fnv/#FNV-param
+#define FNV_PRIME_32 16777619
+#define FNV_BASIS_32 2166136261
+
+/*********************************/
+
+#define IR_PORT PORTB
+// #define IR_PIN PINB
+// #define IR_DDR DDRB
+// #define IR_BV _BV(1)
+#define IR_OCR OCR1A
+#define IR_TCCRnA TCCR1A
+#define IR_TCCRnB TCCR1B
+#define IR_TCNTn TCNT1
+#define IR_TIFRn TIFR1
+#define IR_TIMSKn TIMSK1
+#define IR_TOIEn TOIE1
+#define IR_ICRn ICR1
+#define IR_OCRn OCR1A
+#define IR_COMn0 COM1A0
+#define IR_COMn1 COM1A1
+#define PRONTO_IR_SOURCE 0 // Pronto code byte 0
+#define PRONTO_FREQ_CODE 1 // Pronto code byte 1
+#define PRONTO_SEQUENCE1_LENGTH 2 // Pronto code byte 2
+#define PRONTO_SEQUENCE2_LENGTH 3 // Pronto code byte 3
+#define PRONTO_CODE_START 4 // Pronto code byte 4
+ 
+static const uint16_t *ir_code = NULL;
+static uint16_t ir_cycle_count = 0;
+static uint32_t ir_total_cycle_count = 0;
+static uint8_t ir_seq_index = 0;
+static uint8_t ir_led_state = 0;
+
+/*********************************/
+
+
 // IR receiving stuff
 IRrecv MyriadReceiver(RECV_PIN);
-IRdecode MyriadDecoder;
+IRsend MyriadEmmitter;
+decode_results MyriadDecodeResults;
+//IRdecode MyriadDecoder;
 
 // Stores the incoming data received from the central BLE device
 char ble_buffer[BLE_RECV_BUFFER_MAX] = {0};
@@ -88,6 +134,12 @@ int myriad_ble_read() {
  *
  * @returns (int) number of bytes written
 **/
+
+int ble_write_signal() {
+
+}
+
+/*
 int ble_write_signal() {
   // Temp buffer for converting values to strings
   char *s;
@@ -133,6 +185,7 @@ int ble_write_signal() {
   // Return the number of bytes we wrote over BLE
   return i;
 }
+*/
 
 /**
  * Shortcut method for sending OP codes back to the central device
@@ -156,6 +209,87 @@ bool cmp(char *cmp) {
   return strcmp(ble_buffer, cmp) == 0;
 }
 
+
+
+
+/***********************************************/
+// Compare two tick values, returning 0 if newval is shorter,
+// 1 if newval is equal, and 2 if newval is longer
+// Use a tolerance of 20%
+int compare(unsigned int oldval, unsigned int newval) {
+  if (newval < oldval * .8) {
+    return 0;
+  } 
+  else if (oldval < newval * .8) {
+    return 2;
+  } 
+  else {
+    return 1;
+  }
+}
+
+/**
+ * Converts the raw code values into a 32-bit hash code.
+ * Hopefully this code is unique for each button.
+**/
+unsigned long decodeHash(decode_results *results) {
+  unsigned long hash = FNV_BASIS_32;
+  for (int i = 1; i+2 < results->rawlen; i++) {
+    int value =  compare(results->rawbuf[i], results->rawbuf[i+2]);
+    // Add value into the hash
+    hash = (hash * FNV_PRIME_32) ^ value;
+  }
+  return hash;
+}
+
+int _c = 1;
+void dump(decode_results *results) {
+  int count = results->rawlen;
+  Serial.println(_c);
+  _c++;
+  Serial.println("Hash: ");
+  unsigned long hash = decodeHash(results);
+  Serial.println(hash, HEX);
+  Serial.println("For IR Scope/IrScrutinizer: ");
+  for (int i = 1; i < count; i++) {
+ 
+    if ((i % 2) == 1) {
+      Serial.print("+");
+      Serial.print(results->rawbuf[i]*USECPERTICK, DEC);
+    }
+    else {
+      Serial.print(-(int)results->rawbuf[i]*USECPERTICK, DEC);
+    }
+    Serial.print(" ");
+  }
+  Serial.println("-127976");
+  Serial.println("For Arduino sketch: ");
+  Serial.print("unsigned int raw[");
+  Serial.print(count, DEC);
+  Serial.print("] = {");
+  for (int i = 1; i < count; i++) {
+ 
+    if ((i % 2) == 1) {
+      Serial.print(results->rawbuf[i]*USECPERTICK, DEC);
+    }
+    else {
+      Serial.print((int)results->rawbuf[i]*USECPERTICK, DEC);
+    }
+    Serial.print(",");
+  }
+  Serial.print("};");
+  Serial.println(""); 
+  Serial.print("irsend.sendRaw(raw,");
+  Serial.print(count, DEC);
+  Serial.print(",38);");
+  Serial.println(""); 
+  Serial.println("");
+}
+
+/***********************************************/
+
+
+
 /**
  * The Arduino setup method. See inline comments.
 **/
@@ -171,7 +305,7 @@ void setup()
   // and enable BLE advertising
   ble_set_name("Myriad");
   ble_begin();
-  
+
   // Reset the last time we wrote something to the central
   last_ble_write = -1;
   
@@ -185,6 +319,14 @@ void setup()
  * The main Arduino loop.
 **/
 void loop() {
+
+    if (MyriadReceiver.decode(&MyriadDecodeResults)) {
+        dump(&MyriadDecodeResults);
+        MyriadReceiver.resume(); // Receive the next value
+    }
+
+
+    return;
   
     // Read from BLE central and if we received something, we check to
     // see if it's an operational code, if it is we'll handle that, but
@@ -224,6 +366,7 @@ void loop() {
     ble_do_events();
     
     // Only enable and listen for IR codes when needed
+    /*
     if(receive_enabled && MyriadReceiver.GetResults(&MyriadDecoder)) {
       
       // Restart the receiver so it can be capturing another code
@@ -245,6 +388,16 @@ void loop() {
         ble_write_signal();
       } 
     }
+    */
+
+    if(receive_enabled && MyriadReceiver.decode(&MyriadDecodeResults)) {
+        MyriadReceiver.resume();
+
+
+        Serial.println("WOO");
+
+    }
+
     
     // Check to see if we should send a special message to let the central
     // know if we've received all IR signals available
