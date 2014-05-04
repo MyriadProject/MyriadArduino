@@ -236,9 +236,14 @@ void loop() {
               
       // If this is a supported decoded signal, send it out
       if(MyriadDecoder.decode_type > 0) {
-        Serial.println(F("Received a decoded signal..."));
+        Serial.print(F("Received decoded signal: "));
+        Serial.print(MyriadDecoder.decode_type, DEC);
+        Serial.print(",");
+        Serial.print(MyriadDecoder.value, HEX);
+        Serial.print(",");
+        Serial.println(MyriadDecoder.bits, DEC);
         ble_write_signal();
-      }
+      } 
     }
     
     // Check to see if we should send a special message to let the central
