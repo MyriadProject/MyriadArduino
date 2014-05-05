@@ -22,6 +22,7 @@
 
 // IR receiving stuff
 IRrecv MyriadReceiver(RECV_PIN);
+IRsend MyriadEmitter;
 IRdecode MyriadDecoder;
 
 // Stores the incoming data received from the central BLE device
@@ -177,7 +178,8 @@ void setup()
   
   Serial.println(F("Setup complete..."));
   
-  // XXX
+  // XXX - Probably should remove this after testing so
+  // it's not constantly waiting for an incoming IR signal
   enable_receiver();
 }
 
@@ -214,9 +216,51 @@ void loop() {
       // need to emit with the LED
       else {
         
-        // TODO: Handle emitting LED signals here
-        Serial.print(F("IR code: "));
+        Serial.print(F("IR code received: "));
         Serial.println(ble_buffer);
+
+        int i;
+        char c;
+        int protocol = 0;
+        long code = 0;
+        int bits;
+
+        // Decode the sent in string of the form (int)protocol,(long)hex,(int)bits into
+        // the individual int and long values to use with the IRLib send routines.
+
+        // The protocol is a single-digit (for now), so grab it and convert
+        // to an integer.
+        // TODO(abemusic) - need convert based on the comma instead
+        protocol = String(ble_buffer[0]).toInt();
+
+        // Converts hex string
+        // TODO(abemusic) - should the first and last comma as the range to
+        // loop over
+        for(i = 2; i < strrchr(ble_buffer, ',') - ble_buffer; ++i) {
+            c = tolower(ble_buffer[i]);
+            if((c >= '0') && (c <= '9')) {
+                c = c - '0';
+            }
+            else if ((c >= 'a') && (c <= 'f')) {
+                c = c - 'a' + 10;
+            }
+            code = c + (code << 4);
+        }
+
+        // Starts at the character past the last comma and builds a String object
+        // which we convert to an integer.
+        String s = "";
+        for(i = strrchr(ble_buffer, ',') - ble_buffer + 1; i < ble_len; ++i) {
+            s.concat(ble_buffer[i]);
+        }
+        bits = s.toInt();
+
+        /*Serial.println(protocol, DEC);
+        Serial.println(code, HEX);
+        Serial.println(bits, DEC);*/
+
+        // Send the IR signal out
+        MyriadEmitter.send(IRTYPES(protocol), code, bits);
       }
     } 
     
